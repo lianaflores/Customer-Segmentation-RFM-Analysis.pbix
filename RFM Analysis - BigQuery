@@ -1,0 +1,92 @@
+-- Append all monthly sales tables together
+
+CREATE OR REPLACE TABLE `rfm-analysis-lf.sales.sales_2025` AS
+SELECT OrderID, CustomerID, OrderDate, ProductType,OrderValue FROM `rfm-analysis-lf.sales.sales202501`
+UNION ALL SELECT OrderID, CustomerID, OrderDate, ProductType,OrderValue FROM `rfm-analysis-lf.sales.sales202502`
+UNION ALL SELECT OrderID, CustomerID, OrderDate, ProductType,OrderValue FROM `rfm-analysis-lf.sales.sales202503`
+UNION ALL SELECT OrderID, CustomerID, OrderDate, ProductType,OrderValue FROM `rfm-analysis-lf.sales.sales202504`
+UNION ALL SELECT OrderID, CustomerID, OrderDate, ProductType,OrderValue FROM `rfm-analysis-lf.sales.sales202505`
+UNION ALL SELECT OrderID, CustomerID, OrderDate, ProductType,OrderValue FROM `rfm-analysis-lf.sales.sales202506`
+UNION ALL SELECT OrderID, CustomerID, OrderDate, ProductType,OrderValue FROM `rfm-analysis-lf.sales.sales202507`
+UNION ALL SELECT OrderID, CustomerID, OrderDate, ProductType,OrderValue FROM `rfm-analysis-lf.sales.sales202508`
+UNION ALL SELECT OrderID, CustomerID, OrderDate, ProductType,OrderValue FROM `rfm-analysis-lf.sales.sales202509`
+UNION ALL SELECT OrderID, CustomerID, OrderDate, ProductType,OrderValue FROM `rfm-analysis-lf.sales.sales202510`
+UNION ALL SELECT OrderID, CustomerID, OrderDate, ProductType,OrderValue FROM `rfm-analysis-lf.sales.sales202511`
+UNION ALL SELECT OrderID, CustomerID, OrderDate, ProductType,OrderValue FROM `rfm-analysis-lf.sales.sales202512`;
+
+-- Calculate RFM ranks, Combine views with CTEs
+CREATE OR REPLACE VIEW `rfm-analysis-lf.sales.rfm_metrics`
+AS
+WITH current_date AS (
+  SELECT DATE '2026-04-09' AS analysis_date
+),
+RFM AS (
+  SELECT
+    CustomerID,
+    MAX(PARSE_DATE('%Y-%m-%d', CAST(OrderDate AS STRING))) AS last_order_date,
+    DATE_DIFF(
+      (SELECT analysis_date FROM current_date),
+      MAX(PARSE_DATE('%Y-%m-%d', CAST(OrderDate AS STRING))),
+      DAY
+    ) AS Recency,
+    COUNT(*) AS Frequency,
+    SUM(OrderValue) AS Monetary
+  FROM `rfm-analysis-lf.sales.sales_2025`
+  GROUP BY CustomerID
+)
+SELECT
+  RFM.*,
+  ROW_NUMBER() OVER(ORDER BY Recency ASC) AS R_Rank,
+  ROW_NUMBER() OVER(ORDER BY Frequency DESC) AS F_Rank,
+  ROW_NUMBER() OVER(ORDER BY Monetary DESC) AS M_Rank
+FROM RFM;
+
+-- Assigning decibles (10 = Best / 1 = Worst)
+CREATE OR REPLACE VIEW `rfm-analysis-lf.sales.rfm_scores`
+AS
+SELECT
+  *,
+  NTILE(10) OVER(ORDER BY R_Rank DESC) AS R_Score,
+  NTILE(10) OVER(ORDER BY F_Rank DESC) AS F_Score,
+  NTILE(10) OVER(ORDER BY M_Rank DESC) AS M_Score,
+FROM `rfm-analysis-lf.sales.rfm_metrics`
+
+-- Total score
+CREATE OR REPLACE VIEW `rfm-analysis-lf.sales.rfm_total_scores`
+AS
+SELECT
+  CustomerID,
+  Recency,
+  Frequency,
+  Monetary,
+  R_Score,
+  F_Score,
+  M_Score,
+  (R_Score + F_Score+ M_Score) AS rfm_total_score
+FROM `rfm-analysis-lf.sales.rfm_scores`
+ORDER BY rfm_total_score DESC;
+
+-- BI ready FRM segments table
+CREATE OR REPLACE TABLE `rfm-analysis-lf.sales.rfm_segments_final`
+AS
+SELECT
+  CustomerID,
+  Recency,
+  Frequency,
+  Monetary,
+  R_Score,
+  F_Score,
+  M_Score,
+  rfm_total_score,
+  CASE
+    WHEN rfm_total_score >= 28 THEN 'Loyal VIPs' -- 28-30
+    WHEN rfm_total_score >= 24 THEN 'VIPs' -- 24-27
+    WHEN rfm_total_score >= 20 THEN 'Potential VIPs' -- 20-23
+    WHEN rfm_total_score >= 16 THEN 'Promising' -- 16-19
+    WHEN rfm_total_score >= 12 THEN 'Engaging' -- 12-15
+    WHEN rfm_total_score >= 8 THEN 'Requires Attention' -- 8-13
+    WHEN rfm_total_score >= 4 THEN 'At Risk' -- 4-7
+    ELSE 'Lost/Inactive'
+  END AS rfm_segment
+FROM `rfm-analysis-lf.sales.rfm_total_scores`
+ORDER BY rfm_total_score DESC;
